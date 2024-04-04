@@ -3,12 +3,13 @@ name: Release
 on:
   push:
     # Publish `master` as Docker `latest` image.
-    branches:
-    - master
+    # buildbuddy: not needed
+    # branches:
+    # - master
 
     # Publish `v1.2.3` tags as releases.
     tags:
-    - v*
+    - buildbuddy-v* # buildbuddy: use "buildbuddy-" prefix to avoid having to overwrite upstream tags
 
 env:
   PODMAN_IMAGE: podman
@@ -39,16 +40,19 @@ jobs:
         GPG_SIGN_KEY_PASSPHRASE: ${{ secrets.GPG_SIGN_KEY_PASSPHRASE }}
 
     - name: Log into GitHub registry
+      if: false # buildbuddy: not needed.
       run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
       env:
         GITHUB_TOKEN: ${{ github.token }}
 
     - name: Log into DockerHub registry
+      if: false # buildbuddy: not needed.
       run: echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
       env:
         DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
     - name: Push images
+      if: false # buildbuddy: not needed.
       run: |
         set -eu
 
