@@ -1,14 +1,17 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    # Enables manual activation of the workflow
   push:
     # Publish `master` as Docker `latest` image.
-    branches:
-    - master
+    # buildbuddy: not needed
+    # branches:
+    # - master
 
     # Publish `v1.2.3` tags as releases.
     tags:
-    - v*
+    - buildbuddy-v* # buildbuddy: use "buildbuddy-" prefix to avoid having to overwrite upstream tags
 
 env:
   PODMAN_IMAGE: podman
@@ -18,7 +21,22 @@ env:
 jobs:
   push:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    permissions:
+      actions: write
+      attestations: none
+      checks: none
+      contents: write
+      deployments: none
+      discussions: none
+      id-token: none
+      issues: none
+      packages: read
+      pages: none
+      pull-requests: none
+      repository-projects: none
+      security-events: none
+      statuses: none
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
 
     steps:
     - name: Check out code
@@ -44,16 +62,19 @@ jobs:
         GPG_SIGN_KEY_PASSPHRASE: ${{ secrets.GPG_SIGN_KEY_PASSPHRASE }}
 
     - name: Log into GitHub registry
+      if: false # buildbuddy: not needed.
       run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
       env:
         GITHUB_TOKEN: ${{ github.token }}
 
     - name: Log into DockerHub registry
+      if: false # buildbuddy: not needed.
       run: echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
       env:
         DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
     - name: Push images
+      if: false # buildbuddy: not needed.
       run: |
         set -eu
 
@@ -91,14 +112,20 @@ jobs:
     - name: Create release
       if: github.ref != 'refs/heads/master'
       id: create_release
-      uses: actions/create-release@v1
+      run: |
+        {
+          gh api \
+          --method POST \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          "/repos/${GITHUB_REPOSITORY}/releases" \
+          -f "tag_name=${GITHUB_REF}" -f "name=${GITHUB_REF#ref/tags/buildbuddy-}" \
+          | jq -r 'to_entries | map("\(.key)=\(.value)") | join("\n")'
+        } >> "$GITHUB_OUTPUT"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: ${{ github.ref }}
-        draft: false
-        prerelease: true
+        GITHUB_REF: ${{ github.ref }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
 
     - name: Upload arm64 archive signature
       if: github.ref != 'refs/heads/master'
@@ -107,7 +134,10 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+        # This pulls from the CREATE RELEASE step above, referencing its ID to
+        # get its outputs object, which contains all the entries in the JSON
+        # response from the API endpoint. This includes the upload URL.
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./build/asset/podman-linux-arm64.tar.gz.asc
         asset_name: podman-linux-arm64.tar.gz.asc
         asset_content_type: application/octet-stream
@@ -119,7 +149,10 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+        # This pulls from the CREATE RELEASE step above, referencing its ID to
+        # get its outputs object, which contains all the entries in the JSON
+        # response from the API endpoint. This includes the upload URL.
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./build/asset/podman-linux-arm64.tar.gz
         asset_name: podman-linux-arm64.tar.gz
         asset_content_type: application/octet-stream
@@ -131,7 +164,10 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+        # This pulls from the CREATE RELEASE step above, referencing its ID to
+        # get its outputs object, which contains all the entries in the JSON
+        # response from the API endpoint. This includes the upload URL.
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./build/asset/podman-linux-amd64.tar.gz.asc
         asset_name: podman-linux-amd64.tar.gz.asc
         asset_content_type: application/octet-stream
@@ -143,7 +179,10 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+        # This pulls from the CREATE RELEASE step above, referencing its ID to
+        # get its outputs object, which contains all the entries in the JSON
+        # response from the API endpoint. This includes the upload URL.
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./build/asset/podman-linux-amd64.tar.gz
         asset_name: podman-linux-amd64.tar.gz
         asset_content_type: application/octet-stream
