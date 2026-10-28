@@ -4,7 +4,7 @@ RUN apk add --no-cache gnupg
 
 
 # golang build base
-FROM golang:1.25-alpine3.22 AS golangbuildbase
+FROM golang:1.27.3-alpine3.24 AS golangbuildbase
 RUN apk add --update --no-cache git make gcc pkgconf musl-dev \
 	btrfs-progs btrfs-progs-dev libassuan-dev lvm2-dev device-mapper \
 	glib-static libc-dev gpgme-dev protobuf-dev protobuf-c-dev \
@@ -27,15 +27,14 @@ RUN set -eux; \
 # podman (without systemd support)
 FROM golangbuildbase AS podman
 RUN apk add --update --no-cache tzdata curl
-ARG PODMAN_VERSION=v5.7.0
+ARG PODMAN_VERSION=v5.8.8
 ARG PODMAN_BUILDTAGS='seccomp selinux apparmor exclude_graphdriver_devicemapper containers_image_openpgp'
 ARG PODMAN_CGO=1
 RUN git clone -c 'advice.detachedHead=false' --depth=1 --branch ${PODMAN_VERSION} https://github.com/containers/podman src/github.com/containers/podman
 WORKDIR $GOPATH/src/github.com/containers/podman
 RUN set -eux; \
-	COMMON_VERSION=$(grep -Eom1 'github.com/containers/common [^ ]+' go.mod | sed 's!github.com/containers/common !!'); \
 	mkdir -p /etc/containers; \
-	curl -fsSL "https://raw.githubusercontent.com/containers/common/${COMMON_VERSION}/pkg/seccomp/seccomp.json" > /etc/containers/seccomp.json
+	cp vendor/go.podman.io/common/pkg/seccomp/seccomp.json /etc/containers/seccomp.json
 RUN set -ex; \
 	export CGO_ENABLED=$PODMAN_CGO; \
 	make bin/podman LDFLAGS_PODMAN="-s -w -extldflags '-static'" BUILDTAGS='${PODMAN_BUILDTAGS}'; \
@@ -97,12 +96,14 @@ RUN apk add --update --no-cache autoconf automake meson ninja linux-headers libc
 ARG PASST_VERSION=2025_09_19.623dbf6
 RUN git clone -c 'advice.detachedHead=false' --depth=1 --branch=$PASST_VERSION git://passt.top/passt
 WORKDIR /passt
+# Check ELF dependencies directly; ldd also accepts static PIE executables.
 RUN set -ex; \
 	make static; \
 	mkdir bin; \
 	cp pasta bin/; \
 	[ ! -f pasta.avx2 ] || cp pasta.avx2 bin/; \
-	! ldd /passt/bin/pasta
+	readelf -l -d /passt/bin/pasta > /tmp/pasta.elf; \
+	! grep -E 'INTERP|NEEDED' /tmp/pasta.elf
 
 
 # fuse-overlayfs (derived from https://github.com/containers/fuse-overlayfs/blob/master/Dockerfile.static)
@@ -154,7 +155,8 @@ RUN set -ex; \
 	./configure --disable-systemd --enable-embedded-yajl; \
 	make LDFLAGS='-static-libgcc -all-static' EXTRA_LDFLAGS='-s -w'; \
 	make install; \
-	! ldd /usr/local/bin/crun
+	readelf -l -d /usr/local/bin/crun > /tmp/crun.elf; \
+	! grep -E 'INTERP|NEEDED' /tmp/crun.elf
 
 
 # Build podman base image
