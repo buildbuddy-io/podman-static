@@ -21,10 +21,10 @@ on:
 
 concurrency: # Run release builds sequentially, cancel outdated PR builds
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }} # buildbuddy: never cancel tag (release) runs
 
-permissions: # buildbuddy: read-only by default; only the release job gets contents: write
-  contents: read
+permissions: # Grant write access to github.token within non-pull_request builds
+  contents: write # buildbuddy: needed for the Create release step; no packages: write
 
 env:
   PODMAN_IMAGE: podman
@@ -52,51 +52,95 @@ jobs:
         uname -a
         docker --version
 
+    - id: release
+      name: Prepare release # buildbuddy: only buildbuddy-v* tags publish
+      if: startsWith(github.ref, 'refs/tags/buildbuddy-v')
+      run: echo publish=true >> "$GITHUB_OUTPUT"
+
     - name: Build & test
       run: make images test
 
     - name: Build multi-arch images and binaries
-      if: "!startsWith(github.ref, 'refs/tags/buildbuddy-v')"
+      if: '!steps.release.outputs.publish'
       run: make clean multiarch-tar
 
     - name: Build signed archives
-      if: startsWith(github.ref, 'refs/tags/buildbuddy-v')
+      if: steps.release.outputs.publish
       run: make clean multiarch-tar TAR_TARGET=signed-tar
       env:
         GPG_SIGN_KEY: ${{ secrets.GPG_SIGN_KEY }}
         GPG_SIGN_KEY_PASSPHRASE: ${{ secrets.GPG_SIGN_KEY_PASSPHRASE }}
 
-    # buildbuddy: upstream's registry login/push steps are removed; we only publish GitHub release archives.
-    - name: Upload release archives
-      if: startsWith(github.ref, 'refs/tags/buildbuddy-v')
-      uses: actions/upload-artifact@v4
-      with:
-        name: release-archives
-        path: build/asset/podman-linux-*.tar.gz*
-        if-no-files-found: error
+    - name: Log into GitHub registry
+      if: false # buildbuddy: no image pushes
+      run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
 
-  # buildbuddy: create the GitHub release explicitly, only for buildbuddy-v* tags.
-  release:
-    needs: push
-    if: startsWith(github.ref, 'refs/tags/buildbuddy-v')
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    steps:
-    - name: Download release archives
-      uses: actions/download-artifact@v4
-      with:
-        name: release-archives
-        path: asset
+    - name: Log into DockerHub registry
+      if: false # buildbuddy: no image pushes
+      run: echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+      env:
+        DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Create release
+    - name: Push images
+      if: false # buildbuddy: no image pushes
       run: |
-        gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
-          --title "${TAG#buildbuddy-}" --notes "" \
-          asset/podman-linux-arm64.tar.gz.asc \
-          asset/podman-linux-arm64.tar.gz \
-          asset/podman-linux-amd64.tar.gz.asc \
-          asset/podman-linux-amd64.tar.gz
+        set -euo pipefail
+
+        GITHUB_IMAGE_REPO=ghcr.io/mgoltzsche/podman
+        GITHUB_IMAGE_REPO=$(echo $GITHUB_IMAGE_REPO | tr '[A-Z]' '[a-z]')
+        DOCKERHUB_IMAGE_REPO=docker.io/mgoltzsche/podman
+
+        # Strip git ref prefix from version
+        TAGS=$(echo "$GITHUB_REF" | sed -e 's,.*/\(.*\),\1,')
+        # Strip "v" prefix from tag name
+        [[ "$GITHUB_REF" == "refs/tags/v"* ]] && TAGS=$(echo $TAGS | sed -e 's/^v//')
+        # Expand tags: 1.2.3 -> 1 1.2 1.2.3
+        TAGS="$(echo "$TAGS" | sed -E -e 's/^((([0-9]+)\.[0-9]+)\.[0-9]+)$/\3 \2 \1/')"
+        COMMIT_SHA="$(git rev-parse HEAD)"
+
+        echo "git commit: $COMMIT_SHA"
+
+        for IMAGE in $PODMAN_REMOTE_IMAGE $PODMAN_IMAGE $PODMAN_MINIMAL_IMAGE; do
+          TAG_SUFFIX=$(echo $IMAGE | sed -E -e 's/^([^-]+)//')
+          LATEST_TAG="$([ "$TAG_SUFFIX" ] && echo $TAG_SUFFIX | sed -E -e 's/^-//' || echo latest)"
+          IMAGE_TAGS="$TAGS"
+          if git log --format=format:%H --first-parent refs/remotes/origin/master | grep -Fxq "$COMMIT_SHA"; then
+            [ "$TAGS" == "master" ] && IMAGE_TAGS="$LATEST_TAG" || IMAGE_TAGS="$LATEST_TAG $TAGS"
+          fi
+          TAG_OPTS=
+          printf 'Pushing image tags: '
+          for TAG in $IMAGE_TAGS; do
+            [ "$TAG" = "$LATEST_TAG" ] || TAG="${TAG}${TAG_SUFFIX}"
+            TAG_OPTS="$TAG_OPTS -t $DOCKERHUB_IMAGE_REPO:$TAG -t $GITHUB_IMAGE_REPO:$TAG"
+            printf ' %s' "$TAG"
+          done
+          echo
+          echo "Pushing $IMAGE image to $DOCKERHUB_IMAGE_REPO and $GITHUB_IMAGE_REPO"
+          make "$IMAGE" PODMAN_BUILD_OPTS="$TAG_OPTS" PODMAN_MINIMAL_BUILD_OPTS="$TAG_OPTS" PODMAN_REMOTE_BUILD_OPTS="$TAG_OPTS"
+        done
+      env:
+        BUILDX_OUTPUT: type=registry
+        PLATFORM: linux/arm64/v8,linux/amd64
+        GITHUB_REF: ${{ github.ref }}
+
+    - name: Create release # buildbuddy: publish signed archives as a GitHub release
+      if: steps.release.outputs.publish
+      run: |
+        set -euo pipefail
+        ASSETS=(
+          ./build/asset/podman-linux-arm64.tar.gz.asc
+          ./build/asset/podman-linux-arm64.tar.gz
+          ./build/asset/podman-linux-amd64.tar.gz.asc
+          ./build/asset/podman-linux-amd64.tar.gz
+        )
+        if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "${ASSETS[@]}"
+        else
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "${TAG#buildbuddy-}" --notes "" "${ASSETS[@]}"
+        fi
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ github.ref_name }}
