@@ -4,7 +4,7 @@ RUN apk add --no-cache gnupg
 
 
 # golang build base
-FROM golang:1.26-alpine3.22 AS golangbuildbase
+FROM golang:1.27.3-alpine3.24 AS golangbuildbase
 RUN apk add --update --no-cache git make gcc pkgconf musl-dev \
 	btrfs-progs btrfs-progs-dev libassuan-dev lvm2-dev device-mapper \
 	glib-static libc-dev gpgme-dev protobuf-dev protobuf-c-dev \
@@ -106,7 +106,9 @@ RUN set -ex; \
 	mkdir bin; \
 	cp pasta bin/; \
 	[ ! -f pasta.avx2 ] || cp pasta.avx2 bin/; \
-	! ldd /passt/bin/pasta
+	readelf -l -d bin/pasta > /tmp/pasta.elf; \
+	[ ! -f bin/pasta.avx2 ] || readelf -l -d bin/pasta.avx2 > /tmp/pasta.avx2.elf; \
+	! grep -qE 'INTERP|NEEDED' /tmp/*.elf
 
 
 # fuse-overlayfs (derived from https://github.com/containers/fuse-overlayfs/blob/master/Dockerfile.static)
@@ -158,7 +160,8 @@ RUN set -ex; \
 	./configure --disable-systemd --enable-embedded-yajl; \
 	make LDFLAGS='-static-libgcc -all-static' EXTRA_LDFLAGS='-s -w'; \
 	make install; \
-	! ldd /usr/local/bin/crun
+	readelf -l -d /usr/local/bin/crun > /tmp/crun.elf; \
+	! grep -qE 'INTERP|NEEDED' /tmp/crun.elf
 
 
 # Build podman base image
