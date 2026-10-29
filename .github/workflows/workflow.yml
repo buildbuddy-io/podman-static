@@ -2,28 +2,23 @@ name: Build
 
 on:
   push:
-    # Publish `master` as Docker `latest` image.
     branches:
-    - master
-    - v5
+    - buildbuddy/** # buildbuddy: validate release branches after a merge (build & test only, no publishing)
 
     # Publish `v1.2.3` tags as releases.
     tags:
-    - v*
+    - buildbuddy-v* # buildbuddy: use "buildbuddy-" prefix to avoid conflicts with upstream tags
 
-  # Trigger the workflow on push or pull request on master branch
-  pull_request:
-    branches:
-    - master
-    - v5
+  pull_request: # buildbuddy: run for PRs into any base branch, including stacked PRs and buildbuddy/** release branches
+
+  workflow_dispatch: # buildbuddy: allow manual runs (releases only when run on a buildbuddy-v* tag)
 
 concurrency: # Run release builds sequentially, cancel outdated PR builds
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }} # buildbuddy: never cancel tag (release) runs
 
 permissions: # Grant write access to github.token within non-pull_request builds
-  contents: write
-  packages: write
+  contents: write # buildbuddy: needed for the Create release step; no packages: write
 
 env:
   PODMAN_IMAGE: podman
@@ -52,17 +47,9 @@ jobs:
         docker --version
 
     - id: release
-      name: Prepare release
-      uses: mgoltzsche/conventional-release@v2
-      with:
-        auto-release: false
-        ignore-commits-before: a14f4b3ee9751ea232ef10b72e4923869ea8c3d7
-        github-release-latest: false
-        github-release-files: >
-          ./build/asset/podman-linux-arm64.tar.gz.asc
-          ./build/asset/podman-linux-arm64.tar.gz
-          ./build/asset/podman-linux-amd64.tar.gz.asc
-          ./build/asset/podman-linux-amd64.tar.gz
+      name: Prepare release # buildbuddy: only buildbuddy-v* tags publish
+      if: startsWith(github.ref, 'refs/tags/buildbuddy-v')
+      run: echo publish=true >> "$GITHUB_OUTPUT"
 
     - name: Build & test
       run: make images test
@@ -79,19 +66,19 @@ jobs:
         GPG_SIGN_KEY_PASSPHRASE: ${{ secrets.GPG_SIGN_KEY_PASSPHRASE }}
 
     - name: Log into GitHub registry
-      if: steps.release.outputs.publish
+      if: false # buildbuddy: no image pushes
       run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
       env:
         GITHUB_TOKEN: ${{ github.token }}
 
     - name: Log into DockerHub registry
-      if: steps.release.outputs.publish
+      if: false # buildbuddy: no image pushes
       run: echo "$DOCKERHUB_TOKEN" | docker login docker.io -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
       env:
         DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
     - name: Push images
-      if: steps.release.outputs.publish
+      if: false # buildbuddy: no image pushes
       run: |
         set -euo pipefail
 
@@ -131,3 +118,23 @@ jobs:
         BUILDX_OUTPUT: type=registry
         PLATFORM: linux/arm64/v8,linux/amd64
         GITHUB_REF: ${{ github.ref }}
+
+    - name: Create release # buildbuddy: publish signed archives as a GitHub release
+      if: steps.release.outputs.publish
+      run: |
+        set -euo pipefail
+        ASSETS=(
+          ./build/asset/podman-linux-arm64.tar.gz.asc
+          ./build/asset/podman-linux-arm64.tar.gz
+          ./build/asset/podman-linux-amd64.tar.gz.asc
+          ./build/asset/podman-linux-amd64.tar.gz
+        )
+        if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "${ASSETS[@]}"
+        else
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "${TAG#buildbuddy-}" --notes "" "${ASSETS[@]}"
+        fi
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ github.ref_name }}
