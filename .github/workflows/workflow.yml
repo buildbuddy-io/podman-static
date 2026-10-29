@@ -2,20 +2,14 @@ name: Build
 
 on:
   push:
-    # Publish `master` as Docker `latest` image.
     branches:
-    - master
-    - v5
+    - buildbuddy/** # buildbuddy: validate release branches after a merge (build & test only, no publishing)
 
     # Publish `v1.2.3` tags as releases.
     tags:
     - buildbuddy-v* # buildbuddy: use "buildbuddy-" prefix to avoid conflicts with upstream tags
 
-  # Trigger the workflow on push or pull request on master branch
-  pull_request:
-    branches:
-    - master
-    - v5
+  pull_request: # buildbuddy: run for PRs into any base branch, including stacked PRs and buildbuddy/** release branches
 
   workflow_dispatch: # buildbuddy: allow manual runs (releases only when run on a buildbuddy-v* tag)
 
